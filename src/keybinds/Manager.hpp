@@ -8,6 +8,7 @@
 
 extern "C" {
 #include <xkbcommon/xkbcommon.h>
+#include <xcb/xcb.h>
 }
 
 #include "Bind.hpp"

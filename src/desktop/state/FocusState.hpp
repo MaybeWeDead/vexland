@@ -2,8 +2,8 @@
 
 #include <memory>
 #include <optional>
-#include "../desktop/view/Window.hpp"
-#include "../output/Monitor.hpp"
+#include "../view/Window.hpp"
+#include "../../output/Monitor.hpp"
 
 // -----------------------------------------------------------------------
 // FocusState.hpp — аналог Desktop::focusState(). Централизованное

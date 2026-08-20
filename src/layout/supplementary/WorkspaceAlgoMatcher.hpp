@@ -6,7 +6,7 @@
 #include <memory>
 #include "../algorithm/TiledAlgorithm.hpp"
 #include "../algorithm/Algorithm.hpp"
-#include "../../config/ConfigManager_v2.hpp"
+#include "../../config/ConfigManager.hpp"
 
 // -----------------------------------------------------------------------
 // WorkspaceAlgoMatcher.hpp — аналог Layout::Supplementary::

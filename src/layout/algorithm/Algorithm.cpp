@@ -1,6 +1,6 @@
 #include "Algorithm.hpp"
 #include "../space/Space.hpp"
-#include "../../config/ConfigManager_v2.hpp"
+#include "../../config/ConfigManager.hpp"
 
 #include <algorithm>
 #include <cmath>

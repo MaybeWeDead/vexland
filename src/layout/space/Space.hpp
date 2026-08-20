@@ -4,7 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
-#include "target/Target.hpp"
+#include "../target/Target.hpp"
 
 // -----------------------------------------------------------------------
 // Space.hpp — аналог Layout::CSpace. Держит список targets одного
