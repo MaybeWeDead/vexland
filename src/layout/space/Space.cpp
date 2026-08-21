@@ -36,6 +36,11 @@ void CSpace::add(std::shared_ptr<ITarget> t) {
 
     if (m_algorithm)
         m_algorithm->newTarget(t);
+
+    // КРИТИЧНО: без этого вызова дерево строится, но геометрия никогда
+    // не применяется к реальным окнам (найдено при реальном тестировании
+    // через X11 — окна оставались 300x200 в углу вместо тайлинга).
+    recalculate();
 }
 
 void CSpace::remove(std::shared_ptr<ITarget> t) {
@@ -51,6 +56,8 @@ void CSpace::remove(std::shared_ptr<ITarget> t) {
 
     if (m_algorithm)
         m_algorithm->removeTarget(t);
+
+    recalculate();
 }
 
 void CSpace::move(std::shared_ptr<ITarget> t, std::optional<SVec2> focalPoint) {
@@ -62,6 +69,8 @@ void CSpace::move(std::shared_ptr<ITarget> t, std::optional<SVec2> focalPoint) {
 
     if (m_algorithm)
         m_algorithm->movedTarget(t, focalPoint);
+
+    recalculate();
 }
 
 void CSpace::swap(std::shared_ptr<ITarget> a, std::shared_ptr<ITarget> b) {

@@ -3,6 +3,8 @@
 #include <csignal>
 #include <string>
 #include <print>
+#include <algorithm>
+#include <cctype>
 
 #include <unistd.h>
 #include <sys/wait.h>
@@ -53,12 +55,34 @@ static void help() {
                   "    --version       -v   - Print version");
 }
 
-static void reapZombieChildrenAutomatically() {
-    struct sigaction act{};
-    act.sa_handler = SIG_DFL;
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = SA_NOCLDWAIT;
-    sigaction(SIGCHLD, &act, nullptr);
+// Раньше здесь стоял SA_NOCLDWAIT, который заставлял ядро автоматически
+// подчищать зомби-процессы САМО, без возможности узнать их статус через
+// waitpid(). Это конфликтовало с superviseCompositorProc(), который
+// явно вызывает waitpid(picom_pid, ..., WNOHANG) чтобы понять, жив ли
+// picom — с SA_NOCLDWAIT это давало ECHILD вместо реального статуса,
+// и рестарт picom при падении никогда не срабатывал (найдено при
+// реальном тестировании). Теперь используем пустой обработчик SIGCHLD
+// (нужен просто чтобы прервать blocking syscalls, если такие будут) +
+// explicit non-blocking waitpid(-1, ...) в event loop для всех детей,
+// которых мы не отслеживаем поимённо (spawnApp-процессы типа xterm/kitty).
+static void onSigChld(int) {
+    // пусто — реальный reap происходит в reapAnyUnattendedChildren()
+    // ниже, вызываемом из event loop; здесь только даём сигналу
+    // прервать xcb_poll_for_event, если тот когда-либо станет blocking
+}
+
+// Подчищает завершившихся детей, о которых мы явно не заботимся
+// (spawnApp() их не отслеживает по PID) — не даёт им висеть как зомби.
+// picom (g_compositorProcPid) обрабатывается отдельно в
+// superviseCompositorProc(), сюда не попадает благодаря проверке PID.
+static void reapAnyUnattendedChildren() {
+    int status = 0;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        if (pid == g_compositorProcPid)
+            continue; // picom обрабатывается в superviseCompositorProc, не трогаем тут повторно
+        // прочие дети (spawnApp-процессы) просто подчищаем молча
+    }
 }
 
 static void onTermSignal(int) {
@@ -270,19 +294,88 @@ static void spawnApp(const std::string& cmd) {
 }
 
 // -----------------------------------------------------------------------
-// Регистрирует тестовые keybind'ы напрямую в коде — временно, пока нет
-// полноценной конвертации ConfigManager::keybinds() (SKeybind структуры
-// из vx.bind() в Lua) в реальные CBind объекты.
-//
-// TODO: заменить на реальный цикл по CConfigManager::get()->keybinds(),
-// конвертирующий каждый SKeybind в CBind через CBind::make(...) и
-// регистрирующий его в CKeybindManager::get()->addBind(...).
+// Конвертирует mod-строку из Lua-конфига ("CTRL", "Control", "Shift+Ctrl")
+// в Input::ModifierMask. Регистронезависимо, поддерживает составные
+// модификаторы через "+".
 // -----------------------------------------------------------------------
-static void registerHardcodedTestBind(xcb_connection_t* conn) {
-    // Ctrl+Q -> открыть kitty (тестовый сценарий: проверить что
-    // keybind pipeline реально работает end-to-end)
+static Input::ModifierMask parseModString(const std::string& modStr) {
+    Input::ModifierMask mask = Input::HL_MODIFIER_NONE;
+
+    std::string upper = modStr;
+    std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return std::toupper(c); });
+
+    // разбиваем по "+" на случай составных модификаторов типа "SHIFT+CTRL"
+    size_t start = 0;
+    while (start <= upper.size()) {
+        size_t      plusPos = upper.find('+', start);
+        std::string part    = upper.substr(start, plusPos == std::string::npos ? std::string::npos : plusPos - start);
+
+        if (part == "CTRL" || part == "CONTROL")
+            mask |= Input::HL_MODIFIER_CTRL;
+        else if (part == "SHIFT")
+            mask |= Input::HL_MODIFIER_SHIFT;
+        else if (part == "ALT")
+            mask |= Input::HL_MODIFIER_ALT;
+        else if (part == "SUPER" || part == "META" || part == "MOD4")
+            mask |= Input::HL_MODIFIER_META;
+        else if (!part.empty())
+            std::println(stderr, "[ WARN ] unknown modifier '{}' in keybind config", part);
+
+        if (plusPos == std::string::npos)
+            break;
+        start = plusPos + 1;
+    }
+
+    return mask;
+}
+
+// -----------------------------------------------------------------------
+// Реальная конвертация SKeybind (из vx.bind() в Lua-конфиге) в
+// настоящие CBind, регистрируемые в CKeybindManager. Раньше main.cpp
+// только регистрировал один захардкоженный тестовый бинд — конфиг из
+// .lua никогда не читался. Это исправляет найденный при реальном
+// X11-тестировании баг: vx.bind(...) в конфиге не имел никакого эффекта.
+//
+// action == "spawn" ожидает первый элемент kb.args как команду для
+// spawnApp(). Любой другой action пока просто логируется — реальный
+// dispatcher действий (killactive, workspace switch и т.д.) появится
+// вместе с InputManager/WindowManager командами позже.
+// -----------------------------------------------------------------------
+static void registerConfigKeybinds() {
+    for (const auto& kb : CConfigManager::get()->keybinds()) {
+        Input::ModifierMask mods = parseModString(kb.mod);
+
+        auto bind = CBind::make(mods, kb.key, 0, [action = kb.action, args = kb.args]() -> SBindResult {
+            if (action == "spawn" && !args.empty()) {
+                spawnApp(args[0]);
+                return {.success = true};
+            }
+
+            std::println("[ INFO ] keybind fired: action='{}' (dispatcher for this action not yet implemented)", action);
+            return {.success = true};
+        });
+
+        if (bind) {
+            CKeybindManager::get()->addBind(std::move(*bind));
+            std::println("[ INFO ] registered keybind: mod='{}' key='{}' action='{}'", kb.mod, kb.key, kb.action);
+        } else {
+            std::println(stderr, "[ WARN ] failed to register keybind from config: mod='{}' key='{}'", kb.mod, kb.key);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Регистрирует тестовый keybind напрямую в коде — оставлен как fallback
+// на случай отсутствия/пустого конфига, чтобы WM не оставался совсем
+// без единого способа что-то запустить.
+// -----------------------------------------------------------------------
+// Development fallback: Ctrl+Q -> kitty всегда доступен, независимо
+// от состояния конфига (даже если .lua не загрузился/пустой/сломан).
+// registerConfigKeybinds() уже реально работает — это не заглушка "пока
+// нет конвертации", а страховка на случай отсутствующего/битого конфига.
+static void registerHardcodedTestBind() {
     auto bindKitty = CBind::make(Input::HL_MODIFIER_CTRL, "q", 0, []() -> SBindResult {
-        std::println("[ INFO ] Ctrl+Q pressed — spawning kitty");
+        std::println("[ INFO ] Ctrl+Q pressed — spawning kitty (fallback bind)");
         spawnApp("kitty");
         return {.success = true};
     });
@@ -290,12 +383,13 @@ static void registerHardcodedTestBind(xcb_connection_t* conn) {
     if (bindKitty)
         CKeybindManager::get()->addBind(std::move(*bindKitty));
     else
-        std::println(stderr, "[ WARN ] failed to register test keybind Ctrl+Q");
+        std::println(stderr, "[ WARN ] failed to register fallback keybind Ctrl+Q");
 }
 
 static void eventLoop(xcb_connection_t* conn, const std::string& picomConfigPath) {
     while (g_running) {
         superviseCompositorProc(picomConfigPath);
+        reapAnyUnattendedChildren();
 
         xcb_generic_event_t* event = xcb_poll_for_event(conn);
         if (!event) {
@@ -345,7 +439,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    reapZombieChildrenAutomatically();
+    signal(SIGCHLD, onSigChld);
     signal(SIGTERM, onTermSignal);
     signal(SIGINT, onTermSignal);
 
@@ -368,7 +462,11 @@ int main(int argc, char** argv) {
 
     // временный тестовый бинд, пока нет полной ConfigManager -> CBind
     // конвертации (см. TODO у registerHardcodedTestBind)
-    registerHardcodedTestBind(g_pCompositor->m_conn);
+    // сначала пробуем реально загруженные из .lua конфига биндинги
+    registerConfigKeybinds();
+    // + всегда держим Ctrl+Q как fallback, чтобы был гарантированный
+    // способ что-то запустить даже без конфига/при ошибке парсинга
+    registerHardcodedTestBind();
 
     if (spawnComp)
         spawnCompositorProc(""); // TODO: путь до дефолтного picom.conf
