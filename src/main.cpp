@@ -23,6 +23,7 @@ extern "C" {
 #include "output/MonitorState.hpp"
 #include "layout/LayoutManager.hpp"
 #include "layout/target/WindowTarget.hpp"
+#include "layout/supplementary/WorkspaceAlgoMatcher.hpp"
 #include "keybinds/Manager.hpp"
 #include "keybinds/Bind.hpp"
 #include "config/ConfigManager.hpp"
@@ -177,6 +178,19 @@ static bool setupDefaultWorkspace() {
     // Space, который CWorkspace::create() построил с временными
     // значениями 1920x1080 (см. TODO в Workspace.cpp)
     ws->m_space->setMonitorGeometry(monitor->x(), monitor->y(), monitor->w(), monitor->h());
+
+    // КРИТИЧНО: без этого CSpace::m_algorithm остаётся nullptr, и вся
+    // логика newTarget()/recalculate() в Space::add() молча
+    // пропускается (if (m_algorithm) ...) — окна маппятся, но дерево
+    // никогда не строится и geometry никогда не применяется. Найдено
+    // при реальном тестировании на Termux:X11: окна оставались
+    // крошечными (дефолтный X11-размер клиента) вместо тайлинга.
+    auto algo = CWorkspaceAlgoMatcher::get()->createAlgorithmForWorkspace(DEFAULT_WORKSPACE_ID);
+    auto dwindleAlgo = std::dynamic_pointer_cast<CDwindleAlgorithm>(algo);
+    if (dwindleAlgo)
+        ws->m_space->setAlgorithm(dwindleAlgo);
+    else
+        std::println(stderr, "[ ERROR ] Failed to create tiling algorithm for default workspace — windows will not be tiled");
 
     CLayoutManager::get()->registerSpace(DEFAULT_WORKSPACE_ID, ws->m_space);
 
