@@ -1,0 +1,86 @@
+[
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/main.cpp.o -c /data/data/com.termux/files/home/vexland/src/main.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/main.cpp",
+  "output": "CMakeFiles/vexland.dir/src/main.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/Compositor.cpp.o -c /data/data/com.termux/files/home/vexland/src/Compositor.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/Compositor.cpp",
+  "output": "CMakeFiles/vexland.dir/src/Compositor.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/desktop/view/Window.cpp.o -c /data/data/com.termux/files/home/vexland/src/desktop/view/Window.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/desktop/view/Window.cpp",
+  "output": "CMakeFiles/vexland.dir/src/desktop/view/Window.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/desktop/state/FocusState.cpp.o -c /data/data/com.termux/files/home/vexland/src/desktop/state/FocusState.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/desktop/state/FocusState.cpp",
+  "output": "CMakeFiles/vexland.dir/src/desktop/state/FocusState.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/desktop/Workspace.cpp.o -c /data/data/com.termux/files/home/vexland/src/desktop/Workspace.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/desktop/Workspace.cpp",
+  "output": "CMakeFiles/vexland.dir/src/desktop/Workspace.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/output/MonitorState.cpp.o -c /data/data/com.termux/files/home/vexland/src/output/MonitorState.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/output/MonitorState.cpp",
+  "output": "CMakeFiles/vexland.dir/src/output/MonitorState.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/layout/target/Target.cpp.o -c /data/data/com.termux/files/home/vexland/src/layout/target/Target.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/layout/target/Target.cpp",
+  "output": "CMakeFiles/vexland.dir/src/layout/target/Target.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/layout/target/WindowTarget.cpp.o -c /data/data/com.termux/files/home/vexland/src/layout/target/WindowTarget.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/layout/target/WindowTarget.cpp",
+  "output": "CMakeFiles/vexland.dir/src/layout/target/WindowTarget.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/layout/space/Space.cpp.o -c /data/data/com.termux/files/home/vexland/src/layout/space/Space.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/layout/space/Space.cpp",
+  "output": "CMakeFiles/vexland.dir/src/layout/space/Space.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/layout/algorithm/Algorithm.cpp.o -c /data/data/com.termux/files/home/vexland/src/layout/algorithm/Algorithm.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/layout/algorithm/Algorithm.cpp",
+  "output": "CMakeFiles/vexland.dir/src/layout/algorithm/Algorithm.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/config/ConfigManager.cpp.o -c /data/data/com.termux/files/home/vexland/src/config/ConfigManager.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/config/ConfigManager.cpp",
+  "output": "CMakeFiles/vexland.dir/src/config/ConfigManager.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/keybinds/Bind.cpp.o -c /data/data/com.termux/files/home/vexland/src/keybinds/Bind.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/keybinds/Bind.cpp",
+  "output": "CMakeFiles/vexland.dir/src/keybinds/Bind.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/keybinds/Key.cpp.o -c /data/data/com.termux/files/home/vexland/src/keybinds/Key.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/keybinds/Key.cpp",
+  "output": "CMakeFiles/vexland.dir/src/keybinds/Key.cpp.o"
+},
+{
+  "directory": "/data/data/com.termux/files/home/vexland/build-arm64",
+  "command": "/data/data/com.termux/files/usr/bin/clang++  -I/data/data/com.termux/files/home/vexland/src -isystem /data/data/com.termux/files/usr/include/lua5.4 -O2 -g -DNDEBUG -std=gnu++23 -Wall -Wextra -Wno-unused-parameter -o CMakeFiles/vexland.dir/src/keybinds/Manager.cpp.o -c /data/data/com.termux/files/home/vexland/src/keybinds/Manager.cpp",
+  "file": "/data/data/com.termux/files/home/vexland/src/keybinds/Manager.cpp",
+  "output": "CMakeFiles/vexland.dir/src/keybinds/Manager.cpp.o"
+}
+]

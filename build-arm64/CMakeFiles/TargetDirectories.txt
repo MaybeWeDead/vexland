@@ -1,0 +1,3 @@
+/data/data/com.termux/files/home/vexland/build-arm64/CMakeFiles/vexland.dir
+/data/data/com.termux/files/home/vexland/build-arm64/CMakeFiles/edit_cache.dir
+/data/data/com.termux/files/home/vexland/build-arm64/CMakeFiles/rebuild_cache.dir
