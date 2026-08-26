@@ -5,6 +5,7 @@
 #include <print>
 #include <algorithm>
 #include <cctype>
+#include <unordered_map>
 
 #include <unistd.h>
 #include <sys/wait.h>
@@ -39,12 +40,10 @@ extern "C" {
 
 static pid_t                 g_compositorProcPid = -1; // picom, не путать с CCompositor
 static volatile sig_atomic_t g_running            = 1;
+static std::unordered_map<xcb_window_t, unsigned> g_pendingWorkspaceUnmaps;
 
-// ID единственного workspace на старте — пока нет полноценного
-// multi-workspace switching UI (keybind "перейти на workspace N" и
-// связанный monitor-tracking), все новые окна падают в этот workspace.
-// TODO: когда появится workspace-switching keybind, это должно стать
-// динамическим "текущий активный workspace текущего монитора".
+// ID workspace, с которого стартует основной монитор. После инициализации
+// новые окна попадают в workspace, активный на текущем мониторе.
 static constexpr int DEFAULT_WORKSPACE_ID = 1;
 
 static void help() {
@@ -161,6 +160,100 @@ static bool becomeWindowManager(xcb_connection_t* conn, xcb_window_t root) {
 // Создаёт дефолтный workspace на основном мониторе и регистрирует его
 // Space в LayoutManager — без этого CLayoutManager::newTarget() не
 // сможет найти, куда класть новые окна.
+static PHLWORKSPACE createWorkspaceForMonitor(WORKSPACEID id, const PHLMONITOR& monitor) {
+    if (!monitor)
+        return nullptr;
+
+    auto existing = CWorkspaceState::get()->byID(id);
+    if (existing)
+        return existing;
+
+    auto ws = CWorkspaceState::get()->create(id, monitor->outputID());
+    if (!ws) {
+        std::println(stderr, "[ ERROR ] Failed to create workspace {}", id);
+        return nullptr;
+    }
+
+    ws->m_space->setMonitorGeometry(monitor->x(), monitor->y(), monitor->w(), monitor->h());
+
+    auto algo = CWorkspaceAlgoMatcher::get()->createAlgorithmForWorkspace(static_cast<int>(id));
+    auto dwindleAlgo = std::dynamic_pointer_cast<CDwindleAlgorithm>(algo);
+    if (!dwindleAlgo) {
+        std::println(stderr, "[ ERROR ] Failed to create tiling algorithm for workspace {}", id);
+        CWorkspaceState::get()->remove(id);
+        return nullptr;
+    }
+
+    ws->m_space->setAlgorithm(dwindleAlgo);
+    CLayoutManager::get()->registerSpace(static_cast<int>(id), ws->m_space);
+    return ws;
+}
+
+static bool switchToWorkspace(xcb_connection_t* conn, const PHLMONITOR& monitor, WORKSPACEID id) {
+    if (!conn || !monitor || id <= 0)
+        return false;
+
+    const WORKSPACEID currentID = monitor->activeWorkspaceID();
+    if (currentID == id) {
+        auto current = CWorkspaceState::get()->byID(id);
+        if (current)
+            current->m_visible = true;
+        return true;
+    }
+
+    auto targetWorkspace = CWorkspaceState::get()->byID(id);
+    if (!targetWorkspace)
+        targetWorkspace = createWorkspaceForMonitor(id, monitor);
+    if (!targetWorkspace)
+        return false;
+
+    auto currentWorkspace = CWorkspaceState::get()->byID(currentID);
+
+    if (currentWorkspace)
+        currentWorkspace->m_visible = false;
+
+    targetWorkspace->m_monitorID = static_cast<int>(monitor->outputID());
+    targetWorkspace->m_visible = true;
+
+    // Сначала скрываем старый workspace. Меняем m_isMapped сами, потому что
+    // UnmapNotify придёт асинхронно после xcb_unmap_window().
+    for (const auto& w : CWindowState::get()->all()) {
+        if (!w || w->m_workspaceID != currentID || !w->m_isMapped)
+            continue;
+
+        ++g_pendingWorkspaceUnmaps[w->getX11Window()];
+        xcb_unmap_window(conn, w->getX11Window());
+        w->m_isMapped = false;
+    }
+
+    // Затем показываем целевой workspace и возвращаем его окна в X11.
+    for (const auto& w : CWindowState::get()->all()) {
+        if (!w || w->m_workspaceID != id)
+            continue;
+
+        xcb_map_window(conn, w->getX11Window());
+        w->m_isMapped = true;
+    }
+
+    monitor->setActiveWorkspaceID(static_cast<int>(id));
+    CFocusState::get()->setMonitor(monitor);
+
+    // Пересчитываем target workspace после переключения и восстанавливаем
+    // фокус на последнее активное окно этого workspace.
+    targetWorkspace->updateWindows();
+
+    auto focusCandidate = targetWorkspace->getFocusCandidate();
+    if (focusCandidate)
+        CFocusState::get()->fullWindowFocus(conn, focusCandidate, FOCUS_REASON_KEYBIND);
+    else
+        CFocusState::get()->fullWindowFocus(conn, nullptr, FOCUS_REASON_KEYBIND);
+
+    xcb_flush(conn);
+
+    std::println("[ INFO ] switched workspace {} -> {} on monitor '{}'", currentID, id, monitor->name());
+    return true;
+}
+
 static bool setupDefaultWorkspace() {
     auto monitor = CMonitorState::get()->primary();
     if (!monitor) {
@@ -168,10 +261,10 @@ static bool setupDefaultWorkspace() {
         return false;
     }
 
-    auto ws = CWorkspaceState::get()->create(DEFAULT_WORKSPACE_ID, monitor->outputID());
-    if (!ws) {
-        std::println(stderr, "[ ERROR ] Failed to create default workspace");
+    auto ws = createWorkspaceForMonitor(DEFAULT_WORKSPACE_ID, monitor);
+    if (!ws)
         return false;
+<<<<<<< HEAD
     }
 
     // геометрия монитора реальная (из XRandR), не заглушка — правим
@@ -193,7 +286,10 @@ static bool setupDefaultWorkspace() {
         std::println(stderr, "[ ERROR ] Failed to create tiling algorithm for default workspace — windows will not be tiled");
 
     CLayoutManager::get()->registerSpace(DEFAULT_WORKSPACE_ID, ws->m_space);
+=======
+>>>>>>> c960dbe (fix)
 
+    ws->m_visible = true;
     monitor->setActiveWorkspaceID(DEFAULT_WORKSPACE_ID);
     CFocusState::get()->setMonitor(monitor);
 
@@ -214,16 +310,27 @@ static void onMapRequest(xcb_connection_t* conn, xcb_map_request_event_t* ev) {
 
     CWindowState::get()->add(w);
 
-    // оборачиваем окно в WindowTarget и кладём в layout дефолтного
-    // workspace — вот тут окно реально начинает участвовать в тайлинге
+    // Новое окно всегда попадает в workspace, активный на текущем мониторе.
+    // Это важно после появления workspace switching: больше нельзя всегда
+    // складывать окна в workspace 1.
+    auto monitor = CFocusState::get()->monitor();
+    if (!monitor)
+        monitor = CMonitorState::get()->primary();
+
+    const WORKSPACEID activeWorkspaceID = monitor ? monitor->activeWorkspaceID() : DEFAULT_WORKSPACE_ID;
+
     auto target = CWindowTarget::create(w);
-    auto space  = CLayoutManager::get()->space(DEFAULT_WORKSPACE_ID);
+    auto space  = CLayoutManager::get()->space(static_cast<int>(activeWorkspaceID));
 
     if (space) {
         CLayoutManager::get()->newTarget(target, space);
     } else {
         std::println(stderr, "[ WARN ] no default workspace Space found, window {} will not be tiled", ev->window);
     }
+
+    w->m_workspaceID = static_cast<int>(activeWorkspaceID);
+    w->m_monitorID   = monitor ? static_cast<int>(monitor->outputID()) : -1;
+    w->m_isMapped    = true;
 
     xcb_map_window(conn, ev->window);
     xcb_flush(conn);
@@ -244,6 +351,7 @@ static void onDestroyNotify(xcb_connection_t* conn, xcb_destroy_notify_event_t* 
     if (CFocusState::get()->window() == w)
         CFocusState::get()->fullWindowFocus(conn, nullptr);
 
+    g_pendingWorkspaceUnmaps.erase(ev->window);
     CWindowState::get()->remove(w->stableID());
     std::println("[ INFO ] destroyed window {} (stableID {})", ev->window, w->stableID());
 }
@@ -252,6 +360,27 @@ static void onUnmapNotify(xcb_unmap_notify_event_t* ev) {
     auto w = CWindowState::get()->byXWindow(ev->window);
     if (!w)
         return;
+
+    // An UnmapNotify generated by switchToWorkspace() is expected. Keep it
+    // separate from a real client-side unmap so a rapid workspace switch
+    // (1 -> 2 -> 1 before X11 delivers the event) cannot accidentally mark
+    // an already-remapped window as unmapped.
+    auto pendingIt = g_pendingWorkspaceUnmaps.find(ev->window);
+    if (pendingIt != g_pendingWorkspaceUnmaps.end()) {
+        if (--pendingIt->second == 0)
+            g_pendingWorkspaceUnmaps.erase(pendingIt);
+
+        // If the window has already become active again before the delayed
+        // UnmapNotify arrives, keep it logically mapped. Otherwise this was
+        // the expected hide operation for an inactive workspace.
+        auto monitor = CFocusState::get()->monitor();
+        if (monitor && monitor->activeWorkspaceID() == w->m_workspaceID) {
+            w->m_isMapped = true;
+        } else {
+            w->m_isMapped = false;
+        }
+        return;
+    }
 
     w->m_isMapped = false;
     std::println("[ INFO ] unmapped window {} (stableID {})", ev->window, w->stableID());
@@ -365,6 +494,25 @@ static void registerConfigKeybinds() {
                 return {.success = true};
             }
 
+            if (action == "workspace" && !args.empty()) {
+                try {
+                    const auto id = static_cast<WORKSPACEID>(std::stoll(args[0]));
+                    auto monitor = CFocusState::get()->monitor();
+                    if (!monitor)
+                        monitor = CMonitorState::get()->primary();
+
+                    if (!monitor || !switchToWorkspace(g_pCompositor->m_conn, monitor, id)) {
+                        std::println(stderr, "[ WARN ] failed to switch to workspace {}", id);
+                        return {.success = false};
+                    }
+
+                    return {.success = true};
+                } catch (const std::exception&) {
+                    std::println(stderr, "[ WARN ] invalid workspace id '{}' in keybind", args[0]);
+                    return {.success = false};
+                }
+            }
+
             std::println("[ INFO ] keybind fired: action='{}' (dispatcher for this action not yet implemented)", action);
             return {.success = true};
         });
@@ -470,6 +618,11 @@ int main(int argc, char** argv) {
 
     if (!becomeWindowManager(g_pCompositor->m_conn, g_pCompositor->m_root))
         return 1;
+
+    // Register the X11 passive keyboard grabs only after Vexland owns the WM
+    // selection, so configured global keybinds are intercepted by the WM
+    // instead of being delivered to the focused client.
+    CKeybindManager::get()->setX11Connection(g_pCompositor->m_conn, g_pCompositor->m_root);
 
     if (!setupDefaultWorkspace())
         return 1;

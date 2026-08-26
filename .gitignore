@@ -1,1 +1,4 @@
 build/
+build-arm64/
+build/
+fix.zip

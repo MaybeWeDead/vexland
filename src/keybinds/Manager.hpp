@@ -56,6 +56,10 @@ class CKeybindManager {
     bool initXkb(xcb_connection_t* conn);
     void updateXkbState(xcb_connection_t* conn);
 
+    // X11 must be told which key combinations belong to the WM. Without
+    // a passive grab, key events are delivered to the focused client.
+    void setX11Connection(xcb_connection_t* conn, xcb_window_t root);
+
     std::string_view currentSubmap() const {
         return m_currentSubmap;
     }
@@ -74,6 +78,8 @@ class CKeybindManager {
     // было обработано как VT-переключение (и дальше искать bind не нужно)
     bool handleVT(xkb_keysym_t keysym, Input::ModifierMask modMask) const;
 
+    void regrabKeys();
+
     std::vector<CBind> m_binds;
     std::string         m_currentSubmap;
 
@@ -81,4 +87,6 @@ class CKeybindManager {
     xkb_keymap*         m_xkbKeymap  = nullptr;
     xkb_state*           m_xkbState   = nullptr;
     int32_t              m_xkbDeviceID = -1;
+    xcb_connection_t*    m_x11Conn = nullptr;
+    xcb_window_t         m_x11Root = XCB_WINDOW_NONE;
 };

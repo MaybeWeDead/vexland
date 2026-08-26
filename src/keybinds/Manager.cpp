@@ -8,6 +8,28 @@ extern "C" {
 #include <print>
 #include <unistd.h>
 
+namespace {
+    constexpr uint16_t GRAB_LOCK_VARIANTS[] = {
+        0,
+        XCB_MOD_MASK_LOCK,
+        XCB_MOD_MASK_2,
+        static_cast<uint16_t>(XCB_MOD_MASK_LOCK | XCB_MOD_MASK_2),
+    };
+
+    uint16_t toX11Modifiers(Input::ModifierMask mods) {
+        uint16_t result = 0;
+        if (mods & Input::HL_MODIFIER_SHIFT)
+            result |= XCB_MOD_MASK_SHIFT;
+        if (mods & Input::HL_MODIFIER_CTRL)
+            result |= XCB_MOD_MASK_CONTROL;
+        if (mods & Input::HL_MODIFIER_ALT)
+            result |= XCB_MOD_MASK_1;
+        if (mods & Input::HL_MODIFIER_META)
+            result |= XCB_MOD_MASK_4;
+        return result;
+    }
+}
+
 // -----------------------------------------------------------------------
 // Manager.cpp — xkbcommon-x11 инициализация по паттерну из i3lock
 // (единственный найденный референс, решающий ровно нашу задачу —
@@ -27,6 +49,9 @@ extern "C" {
 // -----------------------------------------------------------------------
 
 CKeybindManager::~CKeybindManager() {
+    if (m_x11Conn && m_x11Root != XCB_WINDOW_NONE)
+        xcb_ungrab_key(m_x11Conn, XCB_GRAB_ANY, m_x11Root, XCB_MOD_MASK_ANY);
+
     if (m_xkbState)
         xkb_state_unref(m_xkbState);
     if (m_xkbKeymap)
@@ -94,6 +119,8 @@ void CKeybindManager::updateXkbState(xcb_connection_t* conn) {
     m_xkbState = xkb_x11_state_new_from_device(m_xkbKeymap, conn, m_xkbDeviceID);
     if (!m_xkbState)
         std::println(stderr, "[ ERROR ] Failed to reload xkb state after layout change");
+
+    regrabKeys();
 }
 
 SResolvedKey CKeybindManager::resolveKey(xcb_keycode_t keycode) const {
@@ -108,8 +135,72 @@ SResolvedKey CKeybindManager::resolveKey(xcb_keycode_t keycode) const {
     return resolved;
 }
 
+void CKeybindManager::setX11Connection(xcb_connection_t* conn, xcb_window_t root) {
+    m_x11Conn = conn;
+    m_x11Root = root;
+    regrabKeys();
+}
+
+void CKeybindManager::regrabKeys() {
+    if (!m_x11Conn || m_x11Root == XCB_WINDOW_NONE || !m_xkbState)
+        return;
+
+    // All passive grabs created by this X connection are ours. Rebuilding
+    // them as a set keeps layout changes and remove/clear operations simple.
+    xcb_ungrab_key(m_x11Conn, XCB_GRAB_ANY, m_x11Root, XCB_MOD_MASK_ANY);
+
+    for (const auto& bind : m_binds) {
+        if (!bind.enabled() || bind.hasFlag(BIND_FLAG_RELEASE))
+            continue;
+
+        xkb_keysym_t sym = 0;
+        xcb_keycode_t explicitKeycode = 0;
+
+        if (auto keycode = bind.key().keycode())
+            explicitKeycode = static_cast<xcb_keycode_t>(*keycode);
+        else if (auto keysym = bind.key().keysym())
+            sym = *keysym;
+        else
+            continue;
+
+        xcb_keycode_t keycode = explicitKeycode;
+        if (!keycode && sym) {
+            const xkb_keycode_t minCode = xkb_keymap_min_keycode(m_xkbKeymap);
+            const xkb_keycode_t maxCode = xkb_keymap_max_keycode(m_xkbKeymap);
+
+            for (xkb_keycode_t code = minCode; code <= maxCode; ++code) {
+                if (xkb_state_key_get_one_sym(m_xkbState, code) == sym) {
+                    keycode = static_cast<xcb_keycode_t>(code);
+                    break;
+                }
+            }
+        }
+
+        if (!keycode) {
+            std::println(stderr, "[ WARN ] could not resolve X11 keycode for bind");
+            continue;
+        }
+
+        const uint16_t modifiers = toX11Modifiers(bind.modMask());
+        for (const uint16_t lockMask : GRAB_LOCK_VARIANTS) {
+            auto cookie = xcb_grab_key_checked(m_x11Conn, 1, m_x11Root, modifiers | lockMask,
+                                               keycode, XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+            if (auto* err = xcb_request_check(m_x11Conn, cookie)) {
+                std::println(stderr, "[ WARN ] failed to grab keycode {} modifiers 0x{:x}: X11 error {}",
+                             keycode, modifiers | lockMask, err->error_code);
+                free(err);
+            }
+        }
+
+        std::println("[ INFO ] grabbed keybind: keycode={} modifiers=0x{:x}", keycode, modifiers);
+    }
+
+    xcb_flush(m_x11Conn);
+}
+
 size_t CKeybindManager::addBind(CBind&& bind) {
     m_binds.push_back(std::move(bind));
+    regrabKeys();
     return m_binds.size() - 1;
 }
 
@@ -118,11 +209,13 @@ bool CKeybindManager::removeBind(size_t index) {
         return false;
 
     m_binds.erase(m_binds.begin() + index);
+    regrabKeys();
     return true;
 }
 
 void CKeybindManager::clearBinds() {
     m_binds.clear();
+    regrabKeys();
 }
 
 // VT switching — Ctrl+Alt+F1..F12. Это системная фича через ioctl на
