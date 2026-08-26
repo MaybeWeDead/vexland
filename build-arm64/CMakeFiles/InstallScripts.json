@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/data/data/com.termux/files/home/vexland/build-arm64/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
