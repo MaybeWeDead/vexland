@@ -59,6 +59,7 @@ class CKeybindManager {
     // X11 must be told which key combinations belong to the WM. Without
     // a passive grab, key events are delivered to the focused client.
     void setX11Connection(xcb_connection_t* conn, xcb_window_t root);
+    void regrabKeys(); // ПЕРЕНЕС СЮДА
 
     std::string_view currentSubmap() const {
         return m_currentSubmap;
@@ -77,8 +78,6 @@ class CKeybindManager {
     // VT switching — Ctrl+Alt+F1..F12. Возвращает true, если событие
     // было обработано как VT-переключение (и дальше искать bind не нужно)
     bool handleVT(xkb_keysym_t keysym, Input::ModifierMask modMask) const;
-
-    void regrabKeys();
 
     std::vector<CBind> m_binds;
     std::string         m_currentSubmap;

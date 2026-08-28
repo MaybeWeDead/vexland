@@ -16,6 +16,8 @@ extern "C" {
 }
 
 #include "Compositor.hpp"
+#include "managers/InputManager.hpp"
+#include "managers/FullscreenController.hpp"
 #include "desktop/view/Window.hpp"
 #include "desktop/view/WindowState.hpp"
 #include "desktop/state/FocusState.hpp"
@@ -30,20 +32,16 @@ extern "C" {
 #include "config/ConfigManager.hpp"
 
 // -----------------------------------------------------------------------
-// main.cpp — финальная версия. Точка входа: CCompositor::init() поднимает
-// X11-соединение + все системы по стадиям, дальше здесь только event
-// loop, который диспетчерит XCB-события в уже готовые менеджеры.
-//
-// Ничего не дублирует логику Compositor.cpp — main.cpp тонкий, вся
-// содержательная инициализация внутри CCompositor.
+// main.cpp — Точка входа: CCompositor::init() поднимает X11-соединение 
+// + все системы по стадиям, дальше здесь только event loop, который 
+// диспетчерит XCB-события в уже готовые менеджеры.
 // -----------------------------------------------------------------------
 
 static pid_t                 g_compositorProcPid = -1; // picom, не путать с CCompositor
 static volatile sig_atomic_t g_running            = 1;
 static std::unordered_map<xcb_window_t, unsigned> g_pendingWorkspaceUnmaps;
 
-// ID workspace, с которого стартует основной монитор. После инициализации
-// новые окна попадают в workspace, активный на текущем мониторе.
+// ID workspace, с которого стартует основной монитор.
 static constexpr int DEFAULT_WORKSPACE_ID = 1;
 
 static void help() {
@@ -55,33 +53,16 @@ static void help() {
                   "    --version       -v   - Print version");
 }
 
-// Раньше здесь стоял SA_NOCLDWAIT, который заставлял ядро автоматически
-// подчищать зомби-процессы САМО, без возможности узнать их статус через
-// waitpid(). Это конфликтовало с superviseCompositorProc(), который
-// явно вызывает waitpid(picom_pid, ..., WNOHANG) чтобы понять, жив ли
-// picom — с SA_NOCLDWAIT это давало ECHILD вместо реального статуса,
-// и рестарт picom при падении никогда не срабатывал (найдено при
-// реальном тестировании). Теперь используем пустой обработчик SIGCHLD
-// (нужен просто чтобы прервать blocking syscalls, если такие будут) +
-// explicit non-blocking waitpid(-1, ...) в event loop для всех детей,
-// которых мы не отслеживаем поимённо (spawnApp-процессы типа xterm/kitty).
 static void onSigChld(int) {
     // пусто — реальный reap происходит в reapAnyUnattendedChildren()
-    // ниже, вызываемом из event loop; здесь только даём сигналу
-    // прервать xcb_poll_for_event, если тот когда-либо станет blocking
 }
 
-// Подчищает завершившихся детей, о которых мы явно не заботимся
-// (spawnApp() их не отслеживает по PID) — не даёт им висеть как зомби.
-// picom (g_compositorProcPid) обрабатывается отдельно в
-// superviseCompositorProc(), сюда не попадает благодаря проверке PID.
 static void reapAnyUnattendedChildren() {
     int status = 0;
     pid_t pid;
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         if (pid == g_compositorProcPid)
-            continue; // picom обрабатывается в superviseCompositorProc, не трогаем тут повторно
-        // прочие дети (spawnApp-процессы) просто подчищаем молча
+            continue;
     }
 }
 
@@ -138,8 +119,6 @@ static void logX11Error(xcb_generic_error_t* err) {
     free(err);
 }
 
-// Регистрируем WM через SubstructureRedirect — если другой WM уже
-// занял дисплей, тут провалимся с понятной ошибкой, не крашемся.
 static bool becomeWindowManager(xcb_connection_t* conn, xcb_window_t root) {
     uint32_t mask   = XCB_CW_EVENT_MASK;
     uint32_t values = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
@@ -157,9 +136,6 @@ static bool becomeWindowManager(xcb_connection_t* conn, xcb_window_t root) {
     return true;
 }
 
-// Создаёт дефолтный workspace на основном мониторе и регистрирует его
-// Space в LayoutManager — без этого CLayoutManager::newTarget() не
-// сможет найти, куда класть новые окна.
 static PHLWORKSPACE createWorkspaceForMonitor(WORKSPACEID id, const PHLMONITOR& monitor) {
     if (!monitor)
         return nullptr;
@@ -215,8 +191,6 @@ static bool switchToWorkspace(xcb_connection_t* conn, const PHLMONITOR& monitor,
     targetWorkspace->m_monitorID = static_cast<int>(monitor->outputID());
     targetWorkspace->m_visible = true;
 
-    // Сначала скрываем старый workspace. Меняем m_isMapped сами, потому что
-    // UnmapNotify придёт асинхронно после xcb_unmap_window().
     for (const auto& w : CWindowState::get()->all()) {
         if (!w || w->m_workspaceID != currentID || !w->m_isMapped)
             continue;
@@ -226,7 +200,6 @@ static bool switchToWorkspace(xcb_connection_t* conn, const PHLMONITOR& monitor,
         w->m_isMapped = false;
     }
 
-    // Затем показываем целевой workspace и возвращаем его окна в X11.
     for (const auto& w : CWindowState::get()->all()) {
         if (!w || w->m_workspaceID != id)
             continue;
@@ -238,8 +211,6 @@ static bool switchToWorkspace(xcb_connection_t* conn, const PHLMONITOR& monitor,
     monitor->setActiveWorkspaceID(static_cast<int>(id));
     CFocusState::get()->setMonitor(monitor);
 
-    // Пересчитываем target workspace после переключения и восстанавливаем
-    // фокус на последнее активное окно этого workspace.
     targetWorkspace->updateWindows();
 
     auto focusCandidate = targetWorkspace->getFocusCandidate();
@@ -264,30 +235,6 @@ static bool setupDefaultWorkspace() {
     auto ws = createWorkspaceForMonitor(DEFAULT_WORKSPACE_ID, monitor);
     if (!ws)
         return false;
-<<<<<<< HEAD
-    }
-
-    // геометрия монитора реальная (из XRandR), не заглушка — правим
-    // Space, который CWorkspace::create() построил с временными
-    // значениями 1920x1080 (см. TODO в Workspace.cpp)
-    ws->m_space->setMonitorGeometry(monitor->x(), monitor->y(), monitor->w(), monitor->h());
-
-    // КРИТИЧНО: без этого CSpace::m_algorithm остаётся nullptr, и вся
-    // логика newTarget()/recalculate() в Space::add() молча
-    // пропускается (if (m_algorithm) ...) — окна маппятся, но дерево
-    // никогда не строится и geometry никогда не применяется. Найдено
-    // при реальном тестировании на Termux:X11: окна оставались
-    // крошечными (дефолтный X11-размер клиента) вместо тайлинга.
-    auto algo = CWorkspaceAlgoMatcher::get()->createAlgorithmForWorkspace(DEFAULT_WORKSPACE_ID);
-    auto dwindleAlgo = std::dynamic_pointer_cast<CDwindleAlgorithm>(algo);
-    if (dwindleAlgo)
-        ws->m_space->setAlgorithm(dwindleAlgo);
-    else
-        std::println(stderr, "[ ERROR ] Failed to create tiling algorithm for default workspace — windows will not be tiled");
-
-    CLayoutManager::get()->registerSpace(DEFAULT_WORKSPACE_ID, ws->m_space);
-=======
->>>>>>> c960dbe (fix)
 
     ws->m_visible = true;
     monitor->setActiveWorkspaceID(DEFAULT_WORKSPACE_ID);
@@ -310,9 +257,6 @@ static void onMapRequest(xcb_connection_t* conn, xcb_map_request_event_t* ev) {
 
     CWindowState::get()->add(w);
 
-    // Новое окно всегда попадает в workspace, активный на текущем мониторе.
-    // Это важно после появления workspace switching: больше нельзя всегда
-    // складывать окна в workspace 1.
     auto monitor = CFocusState::get()->monitor();
     if (!monitor)
         monitor = CMonitorState::get()->primary();
@@ -332,10 +276,12 @@ static void onMapRequest(xcb_connection_t* conn, xcb_map_request_event_t* ev) {
     w->m_monitorID   = monitor ? static_cast<int>(monitor->outputID()) : -1;
     w->m_isMapped    = true;
 
+    // Делегируем установку масок ввода InputManager'у
+    CInputManager::get()->onWindowCreated(ev->window);
+
     xcb_map_window(conn, ev->window);
     xcb_flush(conn);
 
-    // сразу фокусируем новое окно — стандартное поведение большинства WM
     CFocusState::get()->fullWindowFocus(conn, w, FOCUS_REASON_NEW_WINDOW);
 
     std::println("[ INFO ] mapped window {} (stableID {})", ev->window, w->stableID());
@@ -346,8 +292,6 @@ static void onDestroyNotify(xcb_connection_t* conn, xcb_destroy_notify_event_t* 
     if (!w)
         return;
 
-    // если уничтоженное окно было сфокусировано — снимаем фокус (уходит
-    // на root window), иначе X-сервер продолжит слать ввод в никуда
     if (CFocusState::get()->window() == w)
         CFocusState::get()->fullWindowFocus(conn, nullptr);
 
@@ -361,18 +305,11 @@ static void onUnmapNotify(xcb_unmap_notify_event_t* ev) {
     if (!w)
         return;
 
-    // An UnmapNotify generated by switchToWorkspace() is expected. Keep it
-    // separate from a real client-side unmap so a rapid workspace switch
-    // (1 -> 2 -> 1 before X11 delivers the event) cannot accidentally mark
-    // an already-remapped window as unmapped.
     auto pendingIt = g_pendingWorkspaceUnmaps.find(ev->window);
     if (pendingIt != g_pendingWorkspaceUnmaps.end()) {
         if (--pendingIt->second == 0)
             g_pendingWorkspaceUnmaps.erase(pendingIt);
 
-        // If the window has already become active again before the delayed
-        // UnmapNotify arrives, keep it logically mapped. Otherwise this was
-        // the expected hide operation for an inactive workspace.
         auto monitor = CFocusState::get()->monitor();
         if (monitor && monitor->activeWorkspaceID() == w->m_workspaceID) {
             w->m_isMapped = true;
@@ -386,10 +323,6 @@ static void onUnmapNotify(xcb_unmap_notify_event_t* ev) {
     std::println("[ INFO ] unmapped window {} (stableID {})", ev->window, w->stableID());
 }
 
-// Конвертирует X11 event->state (модификаторы из XCB, битовая маска
-// XCB_MOD_MASK_*) в наш Input::ModifierMask. Отдельная функция, потому
-// что XCB и наш eKeyboardModifiers — разные битовые схемы, смешивать
-// их напрямую было бы тихой засадой на будущее.
 static Input::ModifierMask xcbStateToModMask(uint16_t state) {
     Input::ModifierMask mods = Input::HL_MODIFIER_NONE;
 
@@ -397,9 +330,9 @@ static Input::ModifierMask xcbStateToModMask(uint16_t state) {
         mods |= Input::HL_MODIFIER_SHIFT;
     if (state & XCB_MOD_MASK_CONTROL)
         mods |= Input::HL_MODIFIER_CTRL;
-    if (state & XCB_MOD_MASK_1) // Mod1 = обычно Alt
+    if (state & XCB_MOD_MASK_1)
         mods |= Input::HL_MODIFIER_ALT;
-    if (state & XCB_MOD_MASK_4) // Mod4 = обычно Super/Windows key
+    if (state & XCB_MOD_MASK_4)
         mods |= Input::HL_MODIFIER_META;
 
     return mods;
@@ -415,11 +348,6 @@ static void onKeyRelease(xcb_key_release_event_t* ev) {
     CKeybindManager::get()->onKeyEvent(ev->detail, mods, /*pressed=*/false);
 }
 
-// -----------------------------------------------------------------------
-// Спавнит произвольную программу через fork+execlp — та же схема, что
-// и spawnCompositorProc для picom, но для обычных приложений (kitty
-// и т.д.), запускаемых из keybind'ов.
-// -----------------------------------------------------------------------
 static void spawnApp(const std::string& cmd) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -432,22 +360,14 @@ static void spawnApp(const std::string& cmd) {
         std::println(stderr, "[ ERROR ] failed to exec '{}': {}", cmd, strerror(errno));
         _exit(1);
     }
-
-    // не ждём (waitpid) — зомби подчищает reapZombieChildrenAutomatically()
 }
 
-// -----------------------------------------------------------------------
-// Конвертирует mod-строку из Lua-конфига ("CTRL", "Control", "Shift+Ctrl")
-// в Input::ModifierMask. Регистронезависимо, поддерживает составные
-// модификаторы через "+".
-// -----------------------------------------------------------------------
 static Input::ModifierMask parseModString(const std::string& modStr) {
     Input::ModifierMask mask = Input::HL_MODIFIER_NONE;
 
     std::string upper = modStr;
     std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return std::toupper(c); });
 
-    // разбиваем по "+" на случай составных модификаторов типа "SHIFT+CTRL"
     size_t start = 0;
     while (start <= upper.size()) {
         size_t      plusPos = upper.find('+', start);
@@ -472,18 +392,6 @@ static Input::ModifierMask parseModString(const std::string& modStr) {
     return mask;
 }
 
-// -----------------------------------------------------------------------
-// Реальная конвертация SKeybind (из vx.bind() в Lua-конфиге) в
-// настоящие CBind, регистрируемые в CKeybindManager. Раньше main.cpp
-// только регистрировал один захардкоженный тестовый бинд — конфиг из
-// .lua никогда не читался. Это исправляет найденный при реальном
-// X11-тестировании баг: vx.bind(...) в конфиге не имел никакого эффекта.
-//
-// action == "spawn" ожидает первый элемент kb.args как команду для
-// spawnApp(). Любой другой action пока просто логируется — реальный
-// dispatcher действий (killactive, workspace switch и т.д.) появится
-// вместе с InputManager/WindowManager командами позже.
-// -----------------------------------------------------------------------
 static void registerConfigKeybinds() {
     for (const auto& kb : CConfigManager::get()->keybinds()) {
         Input::ModifierMask mods = parseModString(kb.mod);
@@ -513,6 +421,22 @@ static void registerConfigKeybinds() {
                 }
             }
 
+            if (action == "killactive") {
+                auto w = CFocusState::get()->window();
+                if (w) {
+                    xcb_destroy_window(g_pCompositor->m_conn, w->getX11Window());
+                }
+                return {.success = true};
+            }
+
+            if (action == "fullscreen") {
+                auto w = CFocusState::get()->window();
+                if (w) {
+                    CFullscreenController::get()->setFullscreenMode(g_pCompositor->m_conn, w, !w->m_isFullscreen);
+                }
+                return {.success = true};
+            }
+
             std::println("[ INFO ] keybind fired: action='{}' (dispatcher for this action not yet implemented)", action);
             return {.success = true};
         });
@@ -526,15 +450,6 @@ static void registerConfigKeybinds() {
     }
 }
 
-// -----------------------------------------------------------------------
-// Регистрирует тестовый keybind напрямую в коде — оставлен как fallback
-// на случай отсутствия/пустого конфига, чтобы WM не оставался совсем
-// без единого способа что-то запустить.
-// -----------------------------------------------------------------------
-// Development fallback: Ctrl+Q -> kitty всегда доступен, независимо
-// от состояния конфига (даже если .lua не загрузился/пустой/сломан).
-// registerConfigKeybinds() уже реально работает — это не заглушка "пока
-// нет конвертации", а страховка на случай отсутствующего/битого конфига.
 static void registerHardcodedTestBind() {
     auto bindKitty = CBind::make(Input::HL_MODIFIER_CTRL, "q", 0, []() -> SBindResult {
         std::println("[ INFO ] Ctrl+Q pressed — spawning kitty (fallback bind)");
@@ -555,7 +470,7 @@ static void eventLoop(xcb_connection_t* conn, const std::string& picomConfigPath
 
         xcb_generic_event_t* event = xcb_poll_for_event(conn);
         if (!event) {
-            usleep(1000); // TODO: заменить на epoll/select на xcb_get_file_descriptor(conn) для честного блокирования
+            usleep(1000); 
             continue;
         }
 
@@ -565,8 +480,14 @@ static void eventLoop(xcb_connection_t* conn, const std::string& picomConfigPath
             case XCB_UNMAP_NOTIFY: onUnmapNotify(reinterpret_cast<xcb_unmap_notify_event_t*>(event)); break;
             case XCB_KEY_PRESS: onKeyPress(reinterpret_cast<xcb_key_press_event_t*>(event)); break;
             case XCB_KEY_RELEASE: onKeyRelease(reinterpret_cast<xcb_key_release_event_t*>(event)); break;
+            
+            // Делегируем события мыши в InputManager
+            case XCB_ENTER_NOTIFY: 
+            case XCB_BUTTON_PRESS:
+                CInputManager::get()->onMouseEvent(event); 
+                break;
+
             case XCB_MAPPING_NOTIFY:
-                // раскладка сменилась (setxkbmap и т.д.) — пересобираем xkb state
                 CKeybindManager::get()->updateXkbState(conn);
                 std::println("[ INFO ] keyboard mapping changed, xkb state reloaded");
                 break;
@@ -605,10 +526,6 @@ int main(int argc, char** argv) {
     signal(SIGTERM, onTermSignal);
     signal(SIGINT, onTermSignal);
 
-    // CCompositor::init() поднимает X11 connection + все системы по
-    // стадиям (ConfigManager -> MonitorState/WindowState/WorkspaceState
-    // -> FocusState/LayoutManager/KeybindManager). Вся содержательная
-    // инициализация внутри Compositor.cpp, main.cpp её не дублирует.
     g_pCompositor = std::make_unique<CCompositor>(/*onlyConfigVerification=*/false);
 
     if (!g_pCompositor->init(configPath)) {
@@ -619,24 +536,19 @@ int main(int argc, char** argv) {
     if (!becomeWindowManager(g_pCompositor->m_conn, g_pCompositor->m_root))
         return 1;
 
-    // Register the X11 passive keyboard grabs only after Vexland owns the WM
-    // selection, so configured global keybinds are intercepted by the WM
-    // instead of being delivered to the focused client.
+    // Инициализируем менеджеров
     CKeybindManager::get()->setX11Connection(g_pCompositor->m_conn, g_pCompositor->m_root);
+    CInputManager::get()->init(g_pCompositor->m_conn, g_pCompositor->m_root);
 
     if (!setupDefaultWorkspace())
         return 1;
 
-    // временный тестовый бинд, пока нет полной ConfigManager -> CBind
-    // конвертации (см. TODO у registerHardcodedTestBind)
-    // сначала пробуем реально загруженные из .lua конфига биндинги
     registerConfigKeybinds();
-    // + всегда держим Ctrl+Q как fallback, чтобы был гарантированный
-    // способ что-то запустить даже без конфига/при ошибке парсинга
     registerHardcodedTestBind();
+    CKeybindManager::get()->regrabKeys();
 
     if (spawnComp)
-        spawnCompositorProc(""); // TODO: путь до дефолтного picom.conf
+        spawnCompositorProc("");
 
     g_pCompositor->startCompositor();
 
