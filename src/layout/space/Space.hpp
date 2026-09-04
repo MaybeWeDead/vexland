@@ -44,6 +44,23 @@ class CSpace : public std::enable_shared_from_this<CSpace> {
         return m_workArea;
     }
 
+    // Аналог MONITOR->logicalBox() из Hyprland setTargetSizeAndPosition() —
+    // полная геометрия монитора БЕЗ вычета gaps_out (в отличие от workArea()).
+    // Нужно fullscreen-пути в CDwindleAlgorithm::recalcNode(), чтобы окно
+    // растягивалось на весь монитор, а не на рабочую область с отступами.
+    double monitorX() const {
+        return m_monitorX;
+    }
+    double monitorY() const {
+        return m_monitorY;
+    }
+    double monitorW() const {
+        return m_monitorW;
+    }
+    double monitorH() const {
+        return m_monitorH;
+    }
+
     int workspaceID() const {
         return m_workspaceID;
     }

@@ -1,10 +1,13 @@
 #include "Window.hpp"
 #include "WindowState.hpp"
+#include "../../managers/WindowShape.hpp"
+#include "../../config/ConfigManager.hpp"
 
 #include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include <print>
 
 // -----------------------------------------------------------------------
@@ -108,7 +111,8 @@ void CWindow::setGoalGeometry(double x, double y, double w, double h, bool warp)
         m_anim.curH = h;
         applyCurrentGeometryToX11();
     } else {
-        m_anim.animating = true;
+        m_anim.animating        = true;
+        m_anim.animStartSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 }
 
@@ -128,6 +132,17 @@ void CWindow::applyCurrentGeometryToX11() {
     };
 
     xcb_configure_window(m_conn, m_xwin, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
+
+    // Пересчитываем скруглённую маску — она привязана к пиксельным
+    // размерам окна, значит должна обновляться при каждом resize, не
+    // только при первом map(). Fullscreen-окна не скругляем (аналог
+    // Hyprland: rounding отключается для fullscreen — рамка на весь
+    // экран выглядит чужеродно со скруглением).
+    if (!m_isFullscreen) {
+        auto* cfg = CConfigManager::get();
+        const int rounding = cfg ? static_cast<int>(cfg->getFloat("decoration.rounding", 8.0)) : 8;
+        WindowShape::applyRounding(m_conn, shared_from_this(), rounding);
+    }
 }
 
 // --- alpha -----------------------------------------------------------

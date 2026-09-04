@@ -7,6 +7,7 @@
 #include "layout/LayoutManager.hpp"
 #include "config/ConfigManager.hpp"
 #include "keybinds/Manager.hpp"
+#include "managers/WindowShape.hpp"
 
 #include <cstdio>
 #include <print>
@@ -147,6 +148,12 @@ bool CCompositor::init(const std::string& configPath) {
     const xcb_setup_t*    setup = xcb_get_setup(m_conn);
     xcb_screen_iterator_t iter  = xcb_setup_roots_iterator(setup);
     m_root                       = iter.data->root;
+
+    // Shape extension — нужна для скруглённых углов (см. WindowShape.cpp).
+    // Проверяем один раз тут, а не при каждом applyRounding() —
+    // xcb_get_extension_data кэширует внутри XCB, но нет смысла дёргать
+    // это на каждый resize окна.
+    WindowShape::queryShapeExtension(m_conn);
 
     initManagers(STAGE_PRIORITY);
 

@@ -18,6 +18,13 @@ class CWindow;
 using PHLWINDOW = std::shared_ptr<CWindow>;
 using WPWINDOW  = std::weak_ptr<CWindow>;
 
+// forward declaration — избегаем цикла Window.hpp <-> Target.hpp
+// (Target.hpp уже инклюдит Window.hpp, см. комментарий там). CWindow
+// нужен только shared_ptr<ITarget> как поле — полное определение
+// ITarget ему не требуется, оно нужно только в Window.cpp, где мы
+// реально создаём/используем CWindowTarget.
+class ITarget;
+
 // Многослойный alpha-стейт как в Hyprland — разные системы (fade,
 // fullscreen, layout-transition) двигают alpha независимо, финальная
 // видимая прозрачность — их произведение. Держим как простые float'ы,
@@ -42,6 +49,13 @@ struct SWindowAnimState {
     float  alpha[static_cast<size_t>(eWindowAlpha::LAST)] = {1, 1, 1, 1, 1, 1};
 
     bool   animating = false;
+
+    // Момент, когда началась текущая анимация — нужен AnimationManager'у
+    // чтобы вычислить elapsed для КАЖДОГО окна независимо (окна могут
+    // стартовать анимацию в разные моменты, не синхронно). double =
+    // секунды от steady_clock::epoch(), не системное время — не боимся
+    // перевода часов. 0.0 = "анимация не запущена" (см. animating).
+    double animStartSeconds = 0.0;
 };
 
 // Группа окон (аналог CGroup в Hyprland) — набор ID окон + текущий активный
@@ -67,6 +81,24 @@ class CWindow : public std::enable_shared_from_this<CWindow> {
         return m_stableID;
     }
 
+    // --- layout target (владение) -------------------------------------
+    // КРИТИЧНО: CSpace::m_targets хранит только weak_ptr<ITarget> (см.
+    // Space.hpp), намеренно не владея target'ами — иначе циклическая
+    // ссылка Space<->Target. Значит КТО-ТО должен держать реальный
+    // shared_ptr, иначе объект удаляется сразу после выхода из scope,
+    // где он был создан (было найдено на практике: 2-е окно "не видело"
+    // 1-е в дереве dwindle, потому что shared_ptr на его target жил
+    // только как локальная переменная в onMapRequest() и умирал вместе
+    // с функцией — все weak_ptr на него истекали, и recalcNode тихо
+    // пропускал этот "мёртвый" лист). CWindow — самое естественное
+    // место владения: target живёт ровно столько же, сколько окно.
+    std::shared_ptr<ITarget> windowTarget() const {
+        return m_windowTarget;
+    }
+    void setWindowTarget(std::shared_ptr<ITarget> t) {
+        m_windowTarget = std::move(t);
+    }
+
     // --- геометрия (текущая — то, что реально нарисовано на экране) ---
     void setGoalGeometry(double x, double y, double w, double h, bool warp = false);
     void applyCurrentGeometryToX11(); // configure_window вызов
@@ -82,6 +114,16 @@ class CWindow : public std::enable_shared_from_this<CWindow> {
     }
     double h() const {
         return m_anim.curH;
+    }
+
+    // Прямой доступ к полной анимационной структуре — нужен
+    // AnimationManager'у для чтения begin/goal и записи cur/animating/
+    // animStartSeconds на каждый tick. Не константный намеренно: тикер
+    // мутирует состояние напрямую, отдельные сеттеры под каждое поле
+    // были бы избыточны для internal-контракта между Window и
+    // AnimationManager (оба "наши", тесно связанные компоненты).
+    SWindowAnimState& animState() {
+        return m_anim;
     }
 
     // --- alpha / fade (значения меняет наш AnimationManager, WM их
@@ -133,6 +175,8 @@ class CWindow : public std::enable_shared_from_this<CWindow> {
     xcb_connection_t* m_conn = nullptr;
     xcb_window_t      m_xwin = 0;
     uint64_t          m_stableID;
+
+    std::shared_ptr<ITarget> m_windowTarget; // см. windowTarget()/setWindowTarget() выше
 
     SWindowAnimState  m_anim;
 

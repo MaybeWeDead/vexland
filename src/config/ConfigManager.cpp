@@ -131,6 +131,16 @@ static int lua_vx_bind(lua_State* L) {
     return 0;
 }
 
+static int lua_vx_exec_once(lua_State* L) {
+    auto* mgr = CConfigManager::fromLuaState(L);
+    if (!mgr)
+        return 0;
+
+    const char* cmd = luaL_checkstring(L, 1);
+    mgr->internalExecOnce(cmd);
+    return 0;
+}
+
 void CConfigManager::registerAPI() {
     lua_newtable(m_lua); // создаём таблицу "vx"
 
@@ -140,7 +150,10 @@ void CConfigManager::registerAPI() {
     lua_pushcfunction(m_lua, lua_vx_bind);
     lua_setfield(m_lua, -2, "bind");
 
-    lua_setglobal(m_lua, "vx"); // vx = { set = ..., bind = ... }
+    lua_pushcfunction(m_lua, lua_vx_exec_once);
+    lua_setfield(m_lua, -2, "exec_once");
+
+    lua_setglobal(m_lua, "vx"); // vx = { set = ..., bind = ..., exec_once = ... }
 }
 
 void CConfigManager::internalSet(const std::string& key, SConfigValue value) {

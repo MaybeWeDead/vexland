@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <print>
 
 // -----------------------------------------------------------------------
 // Algorithm.cpp v3 — newTarget/removeTarget/swapTargets логика та же,
@@ -174,12 +175,40 @@ std::shared_ptr<ITarget> CDwindleAlgorithm::getNextCandidate(std::shared_ptr<ITa
     return result;
 }
 
+// Аналог IFullscreenHandler::setTargetSizeAndPosition() / syncTargetSizeAndPosition()
+// из Hyprland: fullscreen-лист получает MONBOX (полную геометрию монитора,
+// без gaps_in) вместо обычного деления пространства. Это тот же принцип
+// "override после recalculate", просто у нас он встроен прямо в обход
+// дерева, а не вынесен в отдельный fs-target реестр (нам не нужны group/
+// floating FS handlers — см. TODO в ModeAlgorithm.hpp про getFSHandler).
 void CDwindleAlgorithm::recalcNode(SDwindleNode* node, double x, double y, double w, double h, double gapsIn) {
     if (!node)
         return;
 
     if (node->isLeaf()) {
         if (auto t = node->target.lock()) {
+            auto win = t->window();
+
+            std::println("[ FSDEBUG ] recalcNode leaf: win={} m_isFullscreen={}", win ? (void*)win.get() : nullptr, win ? win->m_isFullscreen : false);
+
+            if (win && win->m_isFullscreen) {
+                // Аналог MONBOX = MONITOR->logicalBox() — полная геометрия
+                // монитора, БЕЗ gaps_in (в отличие от обычного тайла ниже).
+                // Берём монитор через m_space, а не через FocusState —
+                // так работает даже если фокус на другом мониторе, чем
+                // тот, где реально лежит это окно (тот же кейс, что
+                // комментарий Hyprland отмечает про recalculateMonitor).
+                auto space = m_space.lock();
+                std::println("[ FSDEBUG ] fullscreen branch: space={}", space ? "valid" : "NULL/expired");
+                if (space) {
+                    STargetBox box;
+                    box.logicalBox = SBox{space->monitorX(), space->monitorY(), space->monitorW(), space->monitorH()};
+                    std::println("[ FSDEBUG ] setting MONBOX x={} y={} w={} h={}", box.logicalBox.x, box.logicalBox.y, box.logicalBox.w, box.logicalBox.h);
+                    t->setPositionGlobal(box);
+                    return;
+                }
+            }
+
             const double gx = x + gapsIn;
             const double gy = y + gapsIn;
             const double gw = std::max(1.0, w - 2 * gapsIn);

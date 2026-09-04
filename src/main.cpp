@@ -1,11 +1,14 @@
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <csignal>
 #include <string>
 #include <print>
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>
+#include <filesystem>
+#include <fstream>
 
 #include <unistd.h>
 #include <sys/wait.h>
@@ -18,6 +21,7 @@ extern "C" {
 #include "Compositor.hpp"
 #include "managers/InputManager.hpp"
 #include "managers/FullscreenController.hpp"
+#include "managers/AnimationManager.hpp"
 #include "desktop/view/Window.hpp"
 #include "desktop/view/WindowState.hpp"
 #include "desktop/state/FocusState.hpp"
@@ -68,6 +72,34 @@ static void reapAnyUnattendedChildren() {
 
 static void onTermSignal(int) {
     g_running = 0;
+}
+
+// -----------------------------------------------------------------------
+// resolvePicomConfigPath — ищет picom.conf по стандартным XDG-путям,
+// если пользователь явно не передал --picom-config. Не обязателен:
+// если нигде не найден, picom запускается со своими дефолтами (как и
+// раньше — пустая строка означает "без --config").
+//
+// Порядок поиска (первое совпадение побеждает):
+//   1. $XDG_CONFIG_HOME/vexland/picom.conf
+//   2. ~/.config/vexland/picom.conf
+// -----------------------------------------------------------------------
+static std::string resolvePicomConfigPath() {
+    namespace fs = std::filesystem;
+
+    if (const char* xdgConfig = std::getenv("XDG_CONFIG_HOME"); xdgConfig && *xdgConfig) {
+        fs::path candidate = fs::path(xdgConfig) / "vexland" / "picom.conf";
+        if (fs::exists(candidate))
+            return candidate.string();
+    }
+
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        fs::path candidate = fs::path(home) / ".config" / "vexland" / "picom.conf";
+        if (fs::exists(candidate))
+            return candidate.string();
+    }
+
+    return {};
 }
 
 // -----------------------------------------------------------------------
@@ -264,6 +296,16 @@ static void onMapRequest(xcb_connection_t* conn, xcb_map_request_event_t* ev) {
     const WORKSPACEID activeWorkspaceID = monitor ? monitor->activeWorkspaceID() : DEFAULT_WORKSPACE_ID;
 
     auto target = CWindowTarget::create(w);
+
+    // КРИТИЧНО: CSpace хранит только weak_ptr на target'ы (см.
+    // Window.hpp::windowTarget() комментарий) — без этой строки
+    // shared_ptr в `target` умирал бы вместе с концом этой функции,
+    // и все weak_ptr на него (в т.ч. в дереве dwindle-алгоритма)
+    // истекали бы сразу после первого recalculate. Раньше это
+    // проявлялось как "второе открытое окно не тайлится с первым —
+    // первое остаётся во весь экран".
+    w->setWindowTarget(target);
+
     auto space  = CLayoutManager::get()->space(static_cast<int>(activeWorkspaceID));
 
     if (space) {
@@ -294,6 +336,15 @@ static void onDestroyNotify(xcb_connection_t* conn, xcb_destroy_notify_event_t* 
 
     if (CFocusState::get()->window() == w)
         CFocusState::get()->fullWindowFocus(conn, nullptr);
+
+    // Убираем target из layout-дерева ДО удаления окна из реестра —
+    // иначе dwindle-алгоритм продолжит делить пространство так, будто
+    // окно всё ещё существует (лист останется в дереве, просто со
+    // "зависшим" target'ом). Найдено при отладке того же класса бага,
+    // что и владение shared_ptr<ITarget> — см. комментарий в
+    // Window.hpp::windowTarget().
+    if (auto target = w->windowTarget())
+        CLayoutManager::get()->removeTarget(target);
 
     g_pendingWorkspaceUnmaps.erase(ev->window);
     CWindowState::get()->remove(w->stableID());
@@ -346,6 +397,86 @@ static void onKeyPress(xcb_key_press_event_t* ev) {
 static void onKeyRelease(xcb_key_release_event_t* ev) {
     Input::ModifierMask mods = xcbStateToModMask(ev->state);
     CKeybindManager::get()->onKeyEvent(ev->detail, mods, /*pressed=*/false);
+}
+
+// -----------------------------------------------------------------------
+// closeWindowGracefully — аналог "close window" из toolkit-совместимых
+// WM: сначала пробуем ICCCM WM_DELETE_WINDOW (даём клиенту шанс спросить
+// "сохранить перед выходом?" и т.д.), и только если клиент не объявил
+// поддержку этого протокола в WM_PROTOCOLS — жёстко убиваем через
+// xcb_destroy_window как раньше.
+//
+// Протокол: https://tronche.com/gui/x/icccm/sec-4.html#s-4.2.8.1
+// -----------------------------------------------------------------------
+static bool windowSupportsProtocol(xcb_connection_t* conn, xcb_window_t win, xcb_atom_t wmProtocols, xcb_atom_t wmDeleteWindow) {
+    xcb_get_property_cookie_t cookie = xcb_get_property(conn, 0, win, wmProtocols, XCB_ATOM_ATOM, 0, 32);
+    xcb_get_property_reply_t* reply  = xcb_get_property_reply(conn, cookie, nullptr);
+
+    if (!reply)
+        return false;
+
+    bool supports = false;
+
+    if (reply->type == XCB_ATOM_ATOM && reply->format == 32) {
+        const xcb_atom_t* atoms  = static_cast<xcb_atom_t*>(xcb_get_property_value(reply));
+        const int          count = xcb_get_property_value_length(reply) / sizeof(xcb_atom_t);
+
+        for (int i = 0; i < count; ++i) {
+            if (atoms[i] == wmDeleteWindow) {
+                supports = true;
+                break;
+            }
+        }
+    }
+
+    free(reply);
+    return supports;
+}
+
+static void closeWindowGracefully(xcb_connection_t* conn, xcb_window_t win) {
+    if (!conn || !win)
+        return;
+
+    static xcb_atom_t wmProtocols   = XCB_ATOM_NONE;
+    static xcb_atom_t wmDeleteWindow = XCB_ATOM_NONE;
+
+    if (wmProtocols == XCB_ATOM_NONE) {
+        xcb_intern_atom_cookie_t c1 = xcb_intern_atom(conn, 1, strlen("WM_PROTOCOLS"), "WM_PROTOCOLS");
+        xcb_intern_atom_reply_t* r1 = xcb_intern_atom_reply(conn, c1, nullptr);
+        if (r1) {
+            wmProtocols = r1->atom;
+            free(r1);
+        }
+
+        xcb_intern_atom_cookie_t c2 = xcb_intern_atom(conn, 1, strlen("WM_DELETE_WINDOW"), "WM_DELETE_WINDOW");
+        xcb_intern_atom_reply_t* r2 = xcb_intern_atom_reply(conn, c2, nullptr);
+        if (r2) {
+            wmDeleteWindow = r2->atom;
+            free(r2);
+        }
+    }
+
+    if (wmProtocols == XCB_ATOM_NONE || wmDeleteWindow == XCB_ATOM_NONE ||
+        !windowSupportsProtocol(conn, win, wmProtocols, wmDeleteWindow)) {
+        // клиент не поддерживает вежливое закрытие (или атомы не резолвились) —
+        // fallback на то, что было раньше
+        std::println("[ INFO ] window {} doesn't support WM_DELETE_WINDOW, destroying directly", win);
+        xcb_destroy_window(conn, win);
+        return;
+    }
+
+    xcb_client_message_event_t ev = {};
+    ev.response_type = XCB_CLIENT_MESSAGE;
+    ev.format        = 32;
+    ev.window         = win;
+    ev.type           = wmProtocols;
+    ev.data.data32[0] = wmDeleteWindow;
+    ev.data.data32[1] = XCB_CURRENT_TIME;
+
+    xcb_send_event(conn, 0, win, XCB_EVENT_MASK_NO_EVENT, reinterpret_cast<const char*>(&ev));
+    xcb_flush(conn);
+
+    std::println("[ INFO ] sent WM_DELETE_WINDOW to window {}", win);
 }
 
 static void spawnApp(const std::string& cmd) {
@@ -424,7 +555,7 @@ static void registerConfigKeybinds() {
             if (action == "killactive") {
                 auto w = CFocusState::get()->window();
                 if (w) {
-                    xcb_destroy_window(g_pCompositor->m_conn, w->getX11Window());
+                    closeWindowGracefully(g_pCompositor->m_conn, w->getX11Window());
                 }
                 return {.success = true};
             }
@@ -468,6 +599,12 @@ static void eventLoop(xcb_connection_t* conn, const std::string& picomConfigPath
         superviseCompositorProc(picomConfigPath);
         reapAnyUnattendedChildren();
 
+        // Анимации не привязаны к X11-событиям — тикаем на каждой
+        // итерации busy-loop'а, tick() сам решает (через внутренний
+        // throttle), пора ли применить следующий кадр. Дёшево звать
+        // часто: early-return, если рано или анимировать нечего.
+        AnimationManager::tick();
+
         xcb_generic_event_t* event = xcb_poll_for_event(conn);
         if (!event) {
             usleep(1000); 
@@ -503,6 +640,87 @@ static void eventLoop(xcb_connection_t* conn, const std::string& picomConfigPath
     }
 }
 
+// -----------------------------------------------------------------------
+// resolveOrCreateConfigPath — если пользователь не передал -c/--config,
+// ищем стандартный путь ~/.config/vexland/vexland.lua. Если его тоже
+// нет — создаём директорию и записываем встроенный дефолтный конфиг
+// (см. DEFAULT_CONFIG_LUA ниже), чтобы у пользователя сразу было с
+// чем работать, а не пустой WM без единого бинда.
+//
+// Шаблон встроен как строковая константа в бинарник (а не читается из
+// default_config/vexland.lua на диске), потому что бинарник может
+// запускаться не из корня репозитория — установочный путь к исходникам
+// не гарантирован.
+// -----------------------------------------------------------------------
+
+static const char* DEFAULT_CONFIG_LUA = R"LUACONF(-- -----------------------------------------------------------------------
+-- vexland.lua — автосгенерированный конфиг. Отредактируй под себя —
+-- при следующем запуске Vexland НЕ перезапишет этот файл повторно.
+-- -----------------------------------------------------------------------
+
+local terminal = "xterm"
+local menu     = "rofi -show drun"
+
+-- vx.exec_once("nitrogen --restore")
+-- vx.exec_once("polybar")
+
+vx.set("general.gaps_in", 5)
+vx.set("general.gaps_out", 10)
+
+vx.set("general.border_size", 2)
+vx.set("general.col.active_border", "88c0d0")
+vx.set("general.col.inactive_border", "3b4252")
+
+vx.set("decoration.rounding", 8)
+
+vx.bind("CTRL", "RETURN", "spawn", terminal)
+vx.bind("CTRL", "D", "spawn", menu)
+
+vx.bind("CTRL", "H", "killactive")
+vx.bind("CTRL", "F", "fullscreen")
+
+vx.bind("CTRL", "1", "workspace", "1")
+vx.bind("CTRL", "2", "workspace", "2")
+vx.bind("CTRL", "3", "workspace", "3")
+vx.bind("CTRL", "4", "workspace", "4")
+vx.bind("CTRL", "5", "workspace", "5")
+)LUACONF";
+
+static std::string resolveOrCreateConfigPath() {
+    namespace fs = std::filesystem;
+
+    const char* home = std::getenv("HOME");
+    if (!home || !*home) {
+        std::println(stderr, "[ WARN ] $HOME not set, cannot resolve default config path");
+        return {};
+    }
+
+    fs::path configDir  = fs::path(home) / ".config" / "vexland";
+    fs::path configFile = configDir / "vexland.lua";
+
+    if (fs::exists(configFile))
+        return configFile.string();
+
+    std::error_code ec;
+    fs::create_directories(configDir, ec);
+    if (ec) {
+        std::println(stderr, "[ WARN ] failed to create {}: {}", configDir.string(), ec.message());
+        return {};
+    }
+
+    std::ofstream out(configFile);
+    if (!out) {
+        std::println(stderr, "[ WARN ] failed to create default config at {}", configFile.string());
+        return {};
+    }
+
+    out << DEFAULT_CONFIG_LUA;
+    out.close();
+
+    std::println("[ INFO ] no config found, generated default at {}", configFile.string());
+    return configFile.string();
+}
+
 int main(int argc, char** argv) {
     std::string configPath;
     bool        spawnComp = true;
@@ -521,6 +739,11 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
+
+    // Если -c/--config не передан — ищем/создаём дефолтный конфиг по
+    // стандартному XDG-подобному пути, а не остаёмся вообще без конфига.
+    if (configPath.empty())
+        configPath = resolveOrCreateConfigPath();
 
     signal(SIGCHLD, onSigChld);
     signal(SIGTERM, onTermSignal);
@@ -546,6 +769,13 @@ int main(int argc, char** argv) {
     registerConfigKeybinds();
     registerHardcodedTestBind();
     CKeybindManager::get()->regrabKeys();
+
+    // exec_once — запускаем ПОСЛЕ регистрации биндов, но ДО event loop,
+    // чтобы автозапущенные программы (панель, обои, дефолтный терминал)
+    // появлялись сразу с рабочими хоткеями, а не в окне гонки, когда
+    // WM ещё не готов их обрабатывать.
+    for (const auto& cmd : CConfigManager::get()->execOnceCommands())
+        spawnApp(cmd);
 
     if (spawnComp)
         spawnCompositorProc("");

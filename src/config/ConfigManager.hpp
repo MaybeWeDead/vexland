@@ -69,6 +69,18 @@ class CConfigManager {
         return m_keybinds;
     }
 
+    // список команд из exec_once = "cmd" в .lua — запускаются единожды
+    // сразу после старта event loop (см. main.cpp). Аналог exec-once
+    // из Hyprland-конфига, только без парсинга "cmd1 & cmd2 & cmd3" —
+    // каждый vx.exec_once("...") это отдельная строка/отдельный вызов,
+    // никакого shell-разбора амперсандов на нашей стороне (сама команда
+    // всё равно идёт через /bin/sh -c, так что "a & b" в ОДНОЙ строке
+    // технически тоже сработает, если написать так в конфиге — но это
+    // uже забота автора конфига, не наша).
+    const std::vector<std::string>& execOnceCommands() const {
+        return m_execOnceCommands;
+    }
+
     const std::string& lastError() const {
         return m_lastError;
     }
@@ -84,6 +96,9 @@ class CConfigManager {
     // в .cpp, которые выступают как lua_CFunction
     void internalSet(const std::string& key, SConfigValue value);
     void internalBind(const std::string& mod, const std::string& key, const std::string& action, std::vector<std::string> args, int luaRef = LUA_NOREF);
+    void internalExecOnce(const std::string& cmd) {
+        m_execOnceCommands.push_back(cmd);
+    }
 
     static constexpr int WATCHDOG_INSTRUCTION_INTERVAL = 10000; // проверяем таймаут каждые N инструкций Lua VM
     static constexpr int TIMEOUT_CONFIG_LOAD_MS         = 1500; // максимум времени на загрузку всего конфига
@@ -98,6 +113,7 @@ class CConfigManager {
 
     std::unordered_map<std::string, SConfigValue> m_values;
     std::vector<SKeybind>                          m_keybinds;
+    std::vector<std::string>                       m_execOnceCommands;
     std::string                                    m_lastError;
 
     std::chrono::steady_clock::time_point m_watchdogDeadline;
