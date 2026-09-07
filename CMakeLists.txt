@@ -12,6 +12,9 @@ pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)
 pkg_check_modules(XCB_RANDR REQUIRED IMPORTED_TARGET xcb-randr)
 pkg_check_modules(XCB_XKB REQUIRED IMPORTED_TARGET xcb-xkb)
 pkg_check_modules(XCB_SHAPE REQUIRED IMPORTED_TARGET xcb-shape)
+pkg_check_modules(XCB_COMPOSITE REQUIRED IMPORTED_TARGET xcb-composite)
+pkg_check_modules(XCB_RENDER REQUIRED IMPORTED_TARGET xcb-render)
+pkg_check_modules(XCB_XFIXES REQUIRED IMPORTED_TARGET xcb-xfixes)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 pkg_check_modules(XKBCOMMON_X11 REQUIRED IMPORTED_TARGET xkbcommon-x11)
 
@@ -50,6 +53,9 @@ add_executable(vexland
     src/managers/FullscreenController.cpp
     src/managers/WindowShape.cpp
     src/managers/AnimationManager.cpp
+    src/managers/VXR.cpp
+    src/managers/BitmapFont.cpp
+    src/managers/Splash.cpp
 
     src/keybinds/Bind.cpp
     src/keybinds/Key.cpp
@@ -63,6 +69,9 @@ target_link_libraries(vexland PRIVATE
     PkgConfig::XCB_RANDR
     PkgConfig::XCB_XKB
     PkgConfig::XCB_SHAPE
+    PkgConfig::XCB_COMPOSITE
+    PkgConfig::XCB_RENDER
+    PkgConfig::XCB_XFIXES
     PkgConfig::XKBCOMMON
     PkgConfig::XKBCOMMON_X11
     PkgConfig::LUA

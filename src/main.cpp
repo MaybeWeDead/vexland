@@ -22,6 +22,7 @@ extern "C" {
 #include "managers/InputManager.hpp"
 #include "managers/FullscreenController.hpp"
 #include "managers/AnimationManager.hpp"
+#include "managers/VXR.hpp"
 #include "desktop/view/Window.hpp"
 #include "desktop/view/WindowState.hpp"
 #include "desktop/state/FocusState.hpp"
@@ -321,6 +322,11 @@ static void onMapRequest(xcb_connection_t* conn, xcb_map_request_event_t* ev) {
     // Делегируем установку масок ввода InputManager'у
     CInputManager::get()->onWindowCreated(ev->window);
 
+    // Redirect окна в VXR для потенциальной прозрачности (no-op если
+    // VXR::isAvailable() == false — не требует отдельной проверки
+    // здесь, registerWindow сама проверяет).
+    VXR::registerWindow(conn, w);
+
     xcb_map_window(conn, ev->window);
     xcb_flush(conn);
 
@@ -345,6 +351,11 @@ static void onDestroyNotify(xcb_connection_t* conn, xcb_destroy_notify_event_t* 
     // Window.hpp::windowTarget().
     if (auto target = w->windowTarget())
         CLayoutManager::get()->removeTarget(target);
+
+    // Освобождаем X11-ресурсы VXR ДО удаления окна из реестра — после
+    // remove() shared_ptr может уничтожиться, и getX11Window() внутри
+    // unregisterWindow больше не будет валиден для построения запросов.
+    VXR::unregisterWindow(conn, w);
 
     g_pendingWorkspaceUnmaps.erase(ev->window);
     CWindowState::get()->remove(w->stableID());
@@ -605,6 +616,12 @@ static void eventLoop(xcb_connection_t* conn, const std::string& picomConfigPath
         // часто: early-return, если рано или анимировать нечего.
         AnimationManager::tick();
 
+        // VXR compositing pass — ПОСЛЕ AnimationManager::tick(), чтобы
+        // рисовать уже актуальную (анимированную) geometry, а не кадр
+        // на шаг позади. No-op внутри, если VXR недоступен или все
+        // окна непрозрачны — дёшево звать на каждой итерации.
+        VXR::repaint(conn, g_pCompositor->m_root);
+
         xcb_generic_event_t* event = xcb_poll_for_event(conn);
         if (!event) {
             usleep(1000); 
@@ -661,7 +678,12 @@ static const char* DEFAULT_CONFIG_LUA = R"LUACONF(-- ---------------------------
 local terminal = "xterm"
 local menu     = "rofi -show drun"
 
--- vx.exec_once("nitrogen --restore")
+-- Обои — путь ниже нужно поменять на свой файл. VXR (наш встроенный
+-- compositor) читает реальный root pixmap через _XROOTPMAP_ID, который
+-- feh/nitrogen/xwallpaper выставляют сами — без этого прозрачные окна
+-- будут показывать сплошной чёрный фон вместо обоев.
+vx.exec_once("feh --bg-fill ~/wallpaper.jpg")
+
 -- vx.exec_once("polybar")
 
 vx.set("general.gaps_in", 5)
@@ -672,6 +694,13 @@ vx.set("general.col.active_border", "88c0d0")
 vx.set("general.col.inactive_border", "3b4252")
 
 vx.set("decoration.rounding", 8)
+
+-- Прозрачность окон через VXR (наш собственный XRender compositor,
+-- без picom). 1.0 = непрозрачно. active_opacity влияет и на активное
+-- (сфокусированное) окно тоже — раскомментируй, если хочешь чтобы
+-- ВСЕ окна были полупрозрачными, а не только неактивные.
+vx.set("general.inactive_opacity", 0.85)
+-- vx.set("general.active_opacity", 0.95)
 
 vx.bind("CTRL", "RETURN", "spawn", terminal)
 vx.bind("CTRL", "D", "spawn", menu)

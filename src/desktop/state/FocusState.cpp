@@ -1,6 +1,7 @@
 #include "FocusState.hpp"
 #include "../view/WindowState.hpp"
 #include "../../config/ConfigManager.hpp"
+#include "../../managers/VXR.hpp"
 
 extern "C" {
 #include <xcb/xcb.h>
@@ -76,7 +77,25 @@ void applyBorder(xcb_connection_t* conn, PHLWINDOW w, bool active) {
         free(err1);
     }
 
-    const uint32_t attrValues[] = {colorPixel};
+    // ARGB (32-бит) окна — например alacritty, некоторые GTK/Qt приложения
+    // с включённой compositing-прозрачностью — требуют pixel value С
+    // установленным альфа-байтом (0xFF в старшем байте = полностью
+    // непрозрачный border), иначе сервер отклоняет запрос как BadValue
+    // (найдено на практике: X11 ERROR code=10 major=2 на alacritty,
+    // которого не было на xterm — тот всегда 24-бит). Определяем depth
+    // окна через xcb_get_geometry перед выставлением border_pixel.
+    uint32_t finalColorPixel = colorPixel;
+    {
+        auto geomCookie = xcb_get_geometry(conn, w->getX11Window());
+        auto geomReply  = xcb_get_geometry_reply(conn, geomCookie, nullptr);
+        if (geomReply) {
+            if (geomReply->depth == 32)
+                finalColorPixel = 0xFF000000 | colorPixel;
+            free(geomReply);
+        }
+    }
+
+    const uint32_t attrValues[] = {finalColorPixel};
     auto cookie2 = xcb_change_window_attributes_checked(conn, w->getX11Window(), XCB_CW_BORDER_PIXEL, attrValues);
     auto err2 = xcb_request_check(conn, cookie2);
     if (err2) {
@@ -141,4 +160,21 @@ void CFocusState::fullWindowFocus(xcb_connection_t* conn, PHLWINDOW w, eFocusRea
         applyBorder(conn, prevWindow, /*active=*/false);
 
     applyBorder(conn, w, /*active=*/true);
+
+    // Прозрачность окон через VXR (no-op, если VXR недоступен — см.
+    // VXR::isAvailable()). Читаем из конфига тем же паттерном, что и
+    // border-цвета выше. active_opacity дефолтится в 1.0 (непрозрачно),
+    // чтобы поведение не менялось для тех, кто его не настраивал — но
+    // можно выставить < 1.0, чтобы АКТИВНОЕ окно тоже было полупрозрачным
+    // (как на референсе Hyprland — там оба окна, не только неактивные).
+    {
+        auto* cfg = CConfigManager::get();
+        const float inactiveOpacity = cfg ? static_cast<float>(cfg->getFloat("general.inactive_opacity", 1.0)) : 1.0f;
+        const float activeOpacity   = cfg ? static_cast<float>(cfg->getFloat("general.active_opacity", 1.0)) : 1.0f;
+
+        if (prevWindow && prevWindow != w)
+            VXR::setWindowOpacity(conn, prevWindow, inactiveOpacity);
+
+        VXR::setWindowOpacity(conn, w, activeOpacity);
+    }
 }

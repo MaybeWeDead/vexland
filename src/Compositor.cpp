@@ -8,6 +8,8 @@
 #include "config/ConfigManager.hpp"
 #include "keybinds/Manager.hpp"
 #include "managers/WindowShape.hpp"
+#include "managers/VXR.hpp"
+#include "managers/Splash.hpp"
 
 #include <cstdio>
 #include <print>
@@ -155,6 +157,13 @@ bool CCompositor::init(const std::string& configPath) {
     // это на каждый resize окна.
     WindowShape::queryShapeExtension(m_conn);
 
+    // VXR — минимальный XRender compositor для прозрачности неактивных
+    // окон, без picom. Не критично для запуска: если COMPOSITE/RENDER
+    // недоступны на сервере, Vexland продолжает работать без
+    // прозрачности (VXR::isAvailable() вернёт false, все вызовы
+    // registerWindow/setWindowOpacity/repaint становятся no-op).
+    VXR::init(m_conn, m_root);
+
     initManagers(STAGE_PRIORITY);
 
     // конфиг грузим сразу после ConfigManager создан, до остальных
@@ -163,6 +172,11 @@ bool CCompositor::init(const std::string& configPath) {
         if (!CConfigManager::get()->load(configPath))
             std::println(stderr, "[ WARN ] Config load failed: {} — continuing with defaults", CConfigManager::get()->lastError());
     }
+
+    // Splash — ПОСЛЕ загрузки конфига, чтобы general.disable_splash
+    // (если пользователь его выставил) сработал с самого начала, а не
+    // с одного кадра задержкой.
+    Splash::init();
 
     if (m_onlyConfigVerification)
         return true; // для --verify-config режима дальше идти не нужно

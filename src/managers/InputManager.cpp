@@ -13,24 +13,28 @@ void CInputManager::onWindowCreated(xcb_window_t window) {
     if (!m_conn)
         return;
 
-    // 1. Читаем текущие атрибуты окна, чтобы узнать, какие маски оно просило само
-    xcb_get_window_attributes_cookie_t cookie = xcb_get_window_attributes(m_conn, window);
-    xcb_get_window_attributes_reply_t* reply = xcb_get_window_attributes_reply(m_conn, cookie, nullptr);
+    // ИЗМЕНЕНО: раньше читали существующий your_event_mask через
+    // xcb_get_window_attributes и добавляли к нему наши биты — на
+    // alacritty (в отличие от xterm) эта комбинация давала BadValue
+    // (X11 ERROR code=10 major=2), что ломало клики на этом окне
+    // вообще (без BUTTON_PRESS в маске сервер не шлёт нам это событие
+    // — отсюда "не могу переключить фокус кликом на другое окно").
+    //
+    // Причина комбинации не выяснена до конца (возможна гонка в самой
+    // инициализации X11-окна alacritty), но раз читать чужую маску и
+    // дополнять её оказалось хрупко — просто ставим СВОЙ набор с нуля,
+    // не пытаясь сохранить то, что клиент мог запросить себе сам.
+    // Клиентские собственные маски (для рендеринга, resize-событий и
+    // т.п.) обычно не пересекаются с тем, что нужно WM для focus-
+    // tracking, так что перезапись с нуля здесь безопасна.
+    const uint32_t ourMask = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_FOCUS_CHANGE;
 
-    uint32_t current_mask = 0;
-    if (reply) {
-        current_mask = reply->your_event_mask;
-        free(reply);
+    auto cookie = xcb_change_window_attributes_checked(m_conn, window, XCB_CW_EVENT_MASK, &ourMask);
+    if (auto err = xcb_request_check(m_conn, cookie)) {
+        std::println(stderr, "[ WARN ] InputManager: failed to set event mask on window {}: code={} major={} minor={}",
+                     window, err->error_code, err->major_code, err->minor_code);
+        free(err);
     }
-
-    // 2. Добавляем наши маски (ввод мышью) к существующим
-    current_mask |= XCB_EVENT_MASK_ENTER_WINDOW;
-    current_mask |= XCB_EVENT_MASK_BUTTON_PRESS;
-    current_mask |= XCB_EVENT_MASK_FOCUS_CHANGE;
-
-    // 3. Записываем обновленную маску обратно
-    uint32_t mask = XCB_CW_EVENT_MASK;
-    xcb_change_window_attributes(m_conn, window, mask, &current_mask);
 }
 
 void CInputManager::onMouseEvent(xcb_generic_event_t* event) {
