@@ -7,7 +7,7 @@ Vexland is an experimental X11 window manager written in C++23.
 The project aims to bring the window management experience, dynamic tiling
 and visual behavior inspired by Hyprland to traditional X11/Xorg desktops.
 
-Vexland is **not a Wayland compositor**. It is an X11 window manager.
+Vexland is **not a Wayland compositor**. It is an X11 window manager, lol hi.
 
 ## Features
 
